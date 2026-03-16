@@ -76,14 +76,12 @@ class KVScore():
         self.causal_mask_score = mask[None, None, None, :, :]
 
     def _mask_causal(self, attn_weights: torch.Tensor, window_size: int):
-        """ Apply causal maksing
+        """ Apply causal masking
         """
-        if self.causal_mask_score is None:
-            self._make_mask(attn_weights, window_size)
-        elif self.causal_mask_score.size(-1) != window_size:
+        if self.causal_mask_score is None or self.causal_mask_score.size(-1) != window_size:
             self._make_mask(attn_weights, window_size)
 
-        attn_weights[..., -window_size:, -window_size:] += self.causal_mask_score
+        attn_weights[..., -window_size:, -window_size:] += self.causal_mask_score.to(attn_weights.device)
 
     ##################################################################################################
     def _threshold(self, score: Union[torch.Tensor, List[torch.Tensor]], ratio: float):
