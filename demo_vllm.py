@@ -375,8 +375,19 @@ def main():
     )
     parser.add_argument("--host", default="localhost", help="Server host for client mode")
     parser.add_argument("--port", type=int, default=8000, help="Server port for client mode")
+    parser.add_argument(
+        "--gpus",
+        default=None,
+        help="Comma-separated GPU IDs to use, e.g. '0' or '0,1' (default: all visible GPUs)",
+    )
 
     args = parser.parse_args()
+
+    # Restrict visible GPUs before any CUDA initialisation so that
+    # device_map='auto' in load.py only sees the requested devices.
+    if args.gpus is not None:
+        import os
+        os.environ["CUDA_VISIBLE_DEVICES"] = args.gpus
 
     if args.mode == "basic":
         demo_basic(args.model, args.max_tokens)
