@@ -85,23 +85,18 @@ def llama_qwen_attn_forward(
     hidden_states: torch.Tensor,
     position_embeddings: Tuple[torch.Tensor, torch.Tensor],
     attention_mask: Optional[torch.Tensor],
-    past_key_value: Optional[Cache] = None,
-    cache_position: Optional[torch.LongTensor] = None,
-    **kwargs: Unpack[FlashAttentionKwargs],
-) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+    past_key_values: Optional[Cache] = None,  # new transformers uses plural form
+    **kwargs,
+) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    # Compat: transformers <4.52 passed 'past_key_value' (singular); newer uses plural.
+    if past_key_values is None:
+        past_key_values = kwargs.pop("past_key_value", None)
+    # cache_position may arrive as an explicit kwarg in older transformers.
+    cache_position = kwargs.pop("cache_position", None)
 
     bsz, q_len, _ = hidden_states.size()
     input_shape = hidden_states.shape[:-1]
     hidden_shape = (*input_shape, -1, self.head_dim)
-
-    # DEBUG: trace first call only
-    _layer_idx = getattr(self, 'layer_idx', '?')
-    if _layer_idx == 0 and getattr(llama_qwen_attn_forward, '_dbg_count', 0) < 3:
-        llama_qwen_attn_forward._dbg_count = getattr(llama_qwen_attn_forward, '_dbg_count', 0) + 1
-        import logging as _log
-        _log.getLogger(__name__).warning(
-            f"[DEBUG attn.forward] called layer=0, past_key_value type={type(past_key_value).__name__}, "
-            f"q_len={q_len}")
 
     if isinstance(self, Qwen3Attention):
         query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
@@ -114,20 +109,20 @@ def llama_qwen_attn_forward(
     cos, sin = position_embeddings
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
-    if past_key_value is not None:
+    if past_key_values is not None:
         # sin and cos are specific to RoPE models; cache_position needed for the static cache
         cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-        key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx,
-                                                         cache_kwargs)
+        key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx,
+                                                          cache_kwargs)
 
     dropout_rate = self.attention_dropout if self.training else 0.0
 
     #### Updated #############################################################
-    if getattr(past_key_value, "get_score", None):  # calculate KV importance
-        past_key_value._get_score(query_states, key_states, self.layer_idx)
+    if getattr(past_key_values, "get_score", None):  # calculate KV importance
+        past_key_values._get_score(query_states, key_states, self.layer_idx)
 
-    if getattr(past_key_value, "pruned", None):  # attention with pruned cache
-        query_states, key_states, value_states, info = past_key_value.prepare(
+    if getattr(past_key_values, "pruned", None):  # attention with pruned cache
+        query_states, key_states, value_states, info = past_key_values.prepare(
             query_states, key_states, value_states, self.layer_idx)
 
         # bsz x head x seq, group, dim
