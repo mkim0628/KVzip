@@ -34,6 +34,18 @@ from typing import List
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
+# ── tiny_api_cuda: load compiled CUDA extension or fall back to Python stub ──
+# Must happen before any KVzip module is imported so that kvcache.py can find
+# the module at import time regardless of build status.
+try:
+    import tiny_api_cuda  # noqa: F401  (compiled .so wins if present)
+except ModuleNotFoundError:
+    import importlib.util as _ilu
+    _stub_spec = _ilu.spec_from_file_location("tiny_api_cuda", ROOT / "tiny_api_cuda.py")
+    _stub_mod = _ilu.module_from_spec(_stub_spec)
+    _stub_spec.loader.exec_module(_stub_mod)
+    sys.modules["tiny_api_cuda"] = _stub_mod
+
 
 # ── Demo contexts ─────────────────────────────────────────────────────────────
 
