@@ -31,7 +31,8 @@ class KVScore():
         ]
 
     def _update_score(self, layer_idx: int, score: torch.Tensor):
-        self.score[layer_idx] = torch.cat([self.score[layer_idx], score], dim=-1)
+        target = self.score[layer_idx]
+        self.score[layer_idx] = torch.cat([target, score.to(target.device)], dim=-1)
 
     def _get_score(self, query_states: torch.Tensor, key_states: torch.Tensor, layer_idx: int):
         """ Compute KV importance scores.
