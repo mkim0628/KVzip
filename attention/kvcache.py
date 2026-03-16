@@ -15,7 +15,32 @@ class EvictCache(DynamicCache, KVScore):
     """ KV cache that evicts KV from the cache before decoding.
     """
 
+    # Override key_cache / value_cache with real properties backed by private lists.
+    # Transformers >=4.51 changed DynamicCache.key_cache to a @property that returns
+    # a new list object on every access, so in-place .append()/.cat() assignments
+    # would be lost.  By re-defining the properties here the subclass owns the storage.
+    @property
+    def key_cache(self):
+        return self._key_cache
+
+    @key_cache.setter
+    def key_cache(self, value):
+        self._key_cache = value
+
+    @property
+    def value_cache(self):
+        return self._value_cache
+
+    @value_cache.setter
+    def value_cache(self, value):
+        self._value_cache = value
+
     def __init__(self, model, evict_range: Tuple[int, int]):
+        # Initialise backing lists BEFORE calling DynamicCache.__init__ so that
+        # any setter calls inside it are handled correctly.
+        self._key_cache: list = []
+        self._value_cache: list = []
+        self._seen_tokens: int = 0
         DynamicCache.__init__(self)
         self.device = next(model.parameters()).device
         self.dtype = next(model.parameters()).dtype
@@ -32,14 +57,6 @@ class EvictCache(DynamicCache, KVScore):
 
         self.get_score = False  # indicator for KV scoring
         self.pruned = False  # whether KV cache is pruned or not
-
-        # Newer transformers versions removed these from DynamicCache.__init__
-        if not hasattr(self, "_seen_tokens"):
-            self._seen_tokens = 0
-        if not hasattr(self, "key_cache"):
-            self.key_cache = []
-        if not hasattr(self, "value_cache"):
-            self.value_cache = []
 
         self.valid_pad = torch.ones((1, self.n_heads_kv, self.start_idx),
                                     dtype=bool,
@@ -227,7 +244,27 @@ class RetainCache(DynamicCache, KVScore):
         The EvictCache implements actual eviction.
     """
 
+    # Override key_cache / value_cache – see EvictCache for rationale.
+    @property
+    def key_cache(self):
+        return self._key_cache
+
+    @key_cache.setter
+    def key_cache(self, value):
+        self._key_cache = value
+
+    @property
+    def value_cache(self):
+        return self._value_cache
+
+    @value_cache.setter
+    def value_cache(self, value):
+        self._value_cache = value
+
     def __init__(self, model, evict_range: Tuple[int, int]):
+        self._key_cache: list = []
+        self._value_cache: list = []
+        self._seen_tokens: int = 0
         DynamicCache.__init__(self)
         self.device = next(model.parameters()).device
         self.dtype = next(model.parameters()).dtype
@@ -244,14 +281,6 @@ class RetainCache(DynamicCache, KVScore):
 
         self.get_score = False  # indicator for KV scoring
         self.pruned = False
-
-        # Newer transformers versions removed these from DynamicCache.__init__
-        if not hasattr(self, "_seen_tokens"):
-            self._seen_tokens = 0
-        if not hasattr(self, "key_cache"):
-            self.key_cache = []
-        if not hasattr(self, "value_cache"):
-            self.value_cache = []
 
         self.valid_pad = torch.ones((1, self.n_heads_kv, self.start_idx),
                                     dtype=bool,
