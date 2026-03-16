@@ -23,12 +23,50 @@ from typing import Any, Dict, List, Optional, Union
 import torch
 
 # Allow running from repo root
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _REPO_ROOT)
+
+# ── Graceful fallback: if the CUDA extension is missing, install the pure-Python
+#    stub so that the rest of the imports succeed.  The stub emits an ImportWarning
+#    to remind the user to build the real extension.
+try:
+    import tiny_api_cuda  # noqa: F401  (compiled CUDA extension)
+except ModuleNotFoundError:
+    import importlib.util, types
+    _stub_path = os.path.join(_REPO_ROOT, "tiny_api_cuda.py")
+    _spec = importlib.util.spec_from_file_location("tiny_api_cuda", _stub_path)
+    _stub = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_stub)
+    sys.modules["tiny_api_cuda"] = _stub
 
 from model import ModelKVzip
 from attention.kvcache import EvictCache, RetainCache
-from utils.func import TimeStamp
 from .types import CompletionOutput, RequestOutput, SamplingParams
+
+# ── Detect whether EvictCache decode is safe (needs CUDA extension) ───────────
+_CUDA_EXT_AVAILABLE = "tiny_api_cuda" in sys.modules and not hasattr(
+    sys.modules["tiny_api_cuda"], "__file__"
+) or os.path.exists(os.path.join(_REPO_ROOT, "tiny_api_cuda.py")) is False
+
+def _safe_kv_type(requested: str) -> str:
+    """
+    'evict' requires the compiled CUDA extension for efficient flatten-view
+    updates during decode.  Fall back to 'retain' when the stub is active.
+    """
+    try:
+        import tiny_api_cuda as _m
+        # If the real .so is loaded it has no __file__ attribute set to .py
+        if hasattr(_m, "__file__") and str(_m.__file__).endswith(".py"):
+            if requested == "evict":
+                print(
+                    "[KVzip] INFO: CUDA extension not compiled – "
+                    "switching kv_type 'evict' → 'retain'.\n"
+                    "         Build for full performance:  cd csrc && python build.py install"
+                )
+                return "retain"
+    except Exception:
+        pass
+    return requested
 
 
 class KVzipVLLMEngine:
@@ -85,14 +123,15 @@ class KVzipVLLMEngine:
         """
         self.model_id = model
         self.compression_ratio = compression_ratio
-        self.kv_type = kv_type
+        self.kv_type = _safe_kv_type(kv_type)
         self.backend = backend
         self.max_new_tokens = max_new_tokens
 
-        print(f"[KVzipVLLMEngine] model={model}, ratio={compression_ratio}, backend={backend}")
+        print(f"[KVzipVLLMEngine] model={model}, ratio={compression_ratio}, "
+              f"kv_type={self.kv_type}, backend={backend}")
 
         # KVzip (HuggingFace) model – always required
-        self.kvzip_model = ModelKVzip(model, kv_type=kv_type)
+        self.kvzip_model = ModelKVzip(model, kv_type=self.kv_type)
         self.kvzip_model.gen_kwargs["max_new_tokens"] = max_new_tokens
 
         # Optional vLLM engine
