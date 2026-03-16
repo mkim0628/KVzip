@@ -33,6 +33,10 @@ class EvictCache(DynamicCache, KVScore):
         self.get_score = False  # indicator for KV scoring
         self.pruned = False  # whether KV cache is pruned or not
 
+        # Newer transformers versions removed _seen_tokens from DynamicCache.__init__
+        if not hasattr(self, "_seen_tokens"):
+            self._seen_tokens = 0
+
         self.valid_pad = torch.ones((1, self.n_heads_kv, self.start_idx),
                                     dtype=bool,
                                     device=self.device)
@@ -236,6 +240,10 @@ class RetainCache(DynamicCache, KVScore):
 
         self.get_score = False  # indicator for KV scoring
         self.pruned = False
+
+        # Newer transformers versions removed _seen_tokens from DynamicCache.__init__
+        if not hasattr(self, "_seen_tokens"):
+            self._seen_tokens = 0
 
         self.valid_pad = torch.ones((1, self.n_heads_kv, self.start_idx),
                                     dtype=bool,
