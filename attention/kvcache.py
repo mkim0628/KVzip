@@ -293,9 +293,13 @@ class RetainCache(DynamicCache, KVScore):
             layer_idx: int,
             cache_kwargs=dict(),
     ):
-        """ Update KV cache and return         
+        """ Update KV cache and return
         """
         if layer_idx == 0:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                f"[DEBUG update L0] _key_cache len={len(self._key_cache)}, "
+                f"key_states.shape={key_states.shape}")
             seen_token = cache_kwargs.get("seen_token", key_states.shape[-2])
             self._seen_tokens += seen_token
 
@@ -313,6 +317,11 @@ class RetainCache(DynamicCache, KVScore):
     def slice(self, seen_token_prev: int):
         """ Evict KV of qeuries and generated tokens from the cache (for the reuse of the context cache)
         """
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            f"[DEBUG slice] _key_cache len={len(self._key_cache)}, "
+            f"key_cache id={id(self.key_cache)}, _key_cache id={id(self._key_cache)}, "
+            f"_seen_tokens={self._seen_tokens}")
         assert len(self.key_cache[0].shape) == 4, "Cache at each layer should be 4D tensor"
         for i in range(self.n_layers):
             self.key_cache[i] = self.key_cache[i][:, :, :seen_token_prev]
