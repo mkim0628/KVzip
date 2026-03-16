@@ -231,12 +231,32 @@ class KVzipVLLMEngine:
             request_id = str(uuid.uuid4())
             t0 = time.time()
 
-            # Prefill without importance scoring (short prompts do not need it)
-            kv = self.kvzip_model.prefill(prompt, do_score=False)
-            prompt_tokens = kv._seen_tokens
+            # Apply the model's chat template so the prompt is well-formed,
+            # then call model.generate() directly – no separate KV-cache object
+            # needed for short, single-turn prompts.
+            tokenizer = self.kvzip_model.tokenizer
+            messages = [{"role": "user", "content": prompt}]
+            input_ids = tokenizer.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_tensors="pt",
+            ).to(self.kvzip_model.device)
 
-            output_text = self.kvzip_model.generate("", kv=kv)
-            completion_tokens = len(self.kvzip_model.encode(output_text)[0])
+            prompt_tokens = input_ids.shape[1]
+
+            # Build generation kwargs from current model defaults
+            gen_kwargs = {k: v for k, v in self.kvzip_model.gen_kwargs.items()
+                          if k != "cache_implementation"}
+
+            raw_output = self.kvzip_model.model.generate(input_ids, **gen_kwargs)
+            a_ids = raw_output[0, prompt_tokens:]
+            # Strip trailing eos if present
+            eos = tokenizer.eos_token_id
+            if a_ids.shape[0] > 0 and a_ids[-1].item() == eos:
+                a_ids = a_ids[:-1]
+            output_text = tokenizer.decode(a_ids, skip_special_tokens=True)
+            completion_tokens = a_ids.shape[0]
 
             outputs.append(
                 self._make_output(
