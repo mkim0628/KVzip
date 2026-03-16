@@ -94,6 +94,15 @@ def llama_qwen_attn_forward(
     input_shape = hidden_states.shape[:-1]
     hidden_shape = (*input_shape, -1, self.head_dim)
 
+    # DEBUG: trace first call only
+    _layer_idx = getattr(self, 'layer_idx', '?')
+    if _layer_idx == 0 and getattr(llama_qwen_attn_forward, '_dbg_count', 0) < 3:
+        llama_qwen_attn_forward._dbg_count = getattr(llama_qwen_attn_forward, '_dbg_count', 0) + 1
+        import logging as _log
+        _log.getLogger(__name__).warning(
+            f"[DEBUG attn.forward] called layer=0, past_key_value type={type(past_key_value).__name__}, "
+            f"q_len={q_len}")
+
     if isinstance(self, Qwen3Attention):
         query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
         key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
