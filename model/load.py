@@ -1,6 +1,12 @@
 import torch
 from transformers import AutoConfig, AutoTokenizer, AutoModelForCausalLM
 
+try:
+    import flash_attn  # noqa: F401
+    _FLASH_ATTN_AVAILABLE = True
+except ModuleNotFoundError:
+    _FLASH_ATTN_AVAILABLE = False
+
 
 def get_model_id(name: str):
     """ We support abbreviated model names such as:
@@ -54,11 +60,15 @@ def load_model(model_name: str, **kwargs):
             }
             config.max_position_embeddings = 131072
 
+        attn_impl = "flash_attention_2" if _FLASH_ATTN_AVAILABLE else "sdpa"
+        if not _FLASH_ATTN_AVAILABLE:
+            print("[KVzip] flash_attn not installed – using 'sdpa' attention. "
+                  "Install for best performance: pip install flash-attn --no-build-isolation")
         model = AutoModelForCausalLM.from_pretrained(
             model_id,
             torch_dtype="auto",
             device_map="auto",
-            attn_implementation='flash_attention_2',
+            attn_implementation=attn_impl,
             config=config,
         )
         tokenizer = AutoTokenizer.from_pretrained(model_id)

@@ -10,8 +10,72 @@ from transformers.models.qwen3.modeling_qwen3 import Qwen3Attention
 from transformers.modeling_flash_attention_utils import _flash_attention_forward, FlashAttentionKwargs
 from transformers.processing_utils import Unpack
 
-from flash_attn import flash_attn_varlen_func
+try:
+    from flash_attn import flash_attn_varlen_func
+    _FLASH_ATTN_AVAILABLE = True
+except ModuleNotFoundError:
+    _FLASH_ATTN_AVAILABLE = False
+    flash_attn_varlen_func = None
+
 from utils.func import TimeStamp
+
+
+def _varlen_attention_fallback(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    cu_seqlens_q: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    max_seqlen_q: int,
+    max_seqlen_k: int,
+    dropout_p: float = 0.0,
+    causal: bool = True,
+) -> torch.Tensor:
+    """
+    Pure-PyTorch fallback for flash_attn_varlen_func.
+    Handles variable-length (ragged) batches produced by KVzip's
+    non-uniform head pruning.  Slower than FlashAttention-2 but
+    functionally equivalent.
+
+    Layout: q/k/v are *flattened* tensors where each head's tokens are
+    concatenated in order.  cu_seqlens_q / cu_seqlens_k are exclusive
+    cumulative lengths (including a leading 0), one entry per head + 1.
+    """
+    import math
+    n_heads_kv = cu_seqlens_q.shape[0] - 1
+    n_groups   = q.shape[1]           # GQA groups per KV head
+    head_dim   = q.shape[2]
+    scale      = math.sqrt(head_dim)
+
+    out_segments = []
+    for h in range(n_heads_kv):
+        q_start, q_end = cu_seqlens_q[h].item(), cu_seqlens_q[h + 1].item()
+        k_start, k_end = cu_seqlens_k[h].item(), cu_seqlens_k[h + 1].item()
+
+        q_h = q[q_start:q_end]          # (q_len, n_groups, dim)
+        k_h = k[k_start:k_end, 0, :]   # (k_len, dim)
+        v_h = v[k_start:k_end, 0, :]   # (k_len, dim)
+
+        q_len = q_h.shape[0]
+        k_len = k_h.shape[0]
+
+        # (q_len, n_groups, dim) x (dim, k_len) → (q_len, n_groups, k_len)
+        attn = torch.matmul(q_h, k_h.T.unsqueeze(0)) / scale
+
+        if causal and q_len > 1:
+            mask = torch.full((q_len, k_len), float("-inf"),
+                              device=q.device, dtype=q.dtype)
+            mask_cond = torch.arange(k_len, device=q.device)
+            for i in range(q_len):
+                mask[i, :k_len - q_len + i + 1] = 0
+            attn = attn + mask.unsqueeze(1)
+
+        attn = torch.softmax(attn, dim=-1)
+        # (q_len, n_groups, k_len) x (k_len, dim) → (q_len, n_groups, dim)
+        out_h = torch.matmul(attn, v_h.unsqueeze(0))
+        out_segments.append(out_h)
+
+    return torch.cat(out_segments, dim=0)  # (total_q_tokens, n_groups, dim)
 
 logger = logging.get_logger(__name__)
 
@@ -58,7 +122,8 @@ def llama_qwen_attn_forward(
             query_states, key_states, value_states, self.layer_idx)
 
         # bsz x head x seq, group, dim
-        attn_output = flash_attn_varlen_func(
+        _varlen_fn = flash_attn_varlen_func if _FLASH_ATTN_AVAILABLE else _varlen_attention_fallback
+        attn_output = _varlen_fn(
             query_states,
             key_states,
             value_states,
@@ -77,16 +142,29 @@ def llama_qwen_attn_forward(
         key_states = key_states.transpose(1, 2)  # bsz, seq, head_kv, dim
         value_states = value_states.transpose(1, 2)
 
-        attn_output = _flash_attention_forward(
-            query_states,
-            key_states,
-            value_states,
-            None,  # attention_mask
-            q_len,
-            dropout=dropout_rate,
-            sliding_window=getattr(self, "sliding_window", None),
-            is_causal=self.is_causal,
-        )  # bsz, seq, head, dim
+        if _FLASH_ATTN_AVAILABLE:
+            attn_output = _flash_attention_forward(
+                query_states,
+                key_states,
+                value_states,
+                None,  # attention_mask
+                q_len,
+                dropout=dropout_rate,
+                sliding_window=getattr(self, "sliding_window", None),
+                is_causal=self.is_causal,
+            )  # bsz, seq, head, dim
+        else:
+            # Standard scaled-dot-product attention fallback (no FlashAttention)
+            import torch.nn.functional as F
+            query_states = query_states.transpose(1, 2)   # bsz, head, seq, dim
+            key_states   = key_states.transpose(1, 2)
+            value_states = value_states.transpose(1, 2)
+            attn_output  = F.scaled_dot_product_attention(
+                query_states, key_states, value_states,
+                dropout_p=dropout_rate,
+                is_causal=self.is_causal,
+            )
+            attn_output = attn_output.transpose(1, 2)   # bsz, seq, head, dim
     ###################################################################
 
     attn_output = attn_output.contiguous().view(bsz, q_len, -1)
