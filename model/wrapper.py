@@ -84,14 +84,14 @@ class ModelKVzip():
             "top_p": 1,
             "top_k": None,
             "max_new_tokens": 512,
+            # Prevent transformers from creating a new cache and discarding the
+            # provided past_key_values (behaviour changed in transformers >=4.51).
+            "cache_implementation": None,
+            "use_model_defaults": False,
         }
         if isinstance(self.model, Gemma3ForCausalLM):
-            self.gen_kwargs["cache_implementation"] = None
-            self.gen_kwargs["use_model_defaults"] = False
             self.gen_kwargs["eos_token_id"] = [1, 106]
         elif isinstance(self.model, Qwen3ForCausalLM):
-            self.gen_kwargs["cache_implementation"] = None
-            self.gen_kwargs["use_model_defaults"] = False
             self.gen_kwargs["eos_token_id"] = 151645
 
         self.set_chat_template()
